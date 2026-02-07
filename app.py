@@ -781,7 +781,7 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
     all_stocks = get_all_stocks_eastmoney()
     if not all_stocks:
         st.error("无法连接行情中心，请检查网络")
-        return []
+        return [], []
     
     # 获取大盘指数涨跌幅 (用于相对强度 Alpha 计算)
     index_change = 0.0
