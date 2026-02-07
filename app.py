@@ -798,9 +798,14 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
 
     # 1. 获取全市场增强数据
     all_stocks = get_all_stocks_eastmoney()
+    
+    # DEBUG: 打印获取到的股票数量，方便排查
+    print(f"DEBUG: Scanned {len(all_stocks) if all_stocks else 0} stocks from API")
+    
     if not all_stocks:
-        st.error("无法连接行情中心，请检查网络")
-        return [], []
+        st.error("无法连接行情中心，或市场休市导致数据源暂时不可用。请稍后再试。")
+        # 返回一个假的落选名单，告知用户数据源有问题
+        return [], [{'名称': '系统提示', '评分': 0, '原因': '无法从行情接口获取股票列表，请检查网络或稍后再试'}]
     
     # 获取大盘指数涨跌幅 (用于相对强度 Alpha 计算)
     index_change = 0.0
@@ -884,13 +889,21 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             
             # 1. 基础量能 (RVOL > 1.0)
             # 只要不缩量就行，放宽标准
+            # 特殊处理：如果是周末(周六/周日)，数据可能归零或未更新，避免误杀
+            is_weekend = datetime.now().weekday() >= 5
+            
             if vol_ratio > 1.0: 
                 money_score += 15
                 tags.append("温和放量")
                 reasons.append(f"量比 {vol_ratio:.1f} > 1.0")
+            elif is_weekend and (vol_ratio == 0 or vol_ratio == 1.0):
+                 # 周末豁免：假设数据未更新，给予通过
+                 money_score += 10
+                 tags.append("周末豁免")
+                 reasons.append("周末数据仅供参考")
             else:
-                if len(rejects) < 10:
-                    rejects.append({'名称': name, '评分': score, '原因': f"量能不足(量比{vol_ratio:.1f}<1.0)"})
+                if len(rejects) < 20: # 增加记录数量
+                    rejects.append({'名称': name, '评分': score, '原因': f"量能不足(量比{vol_ratio:.1f}<=1.0)"})
             
             # 2. 主力净流入 (量价配合)
             # 股价上涨且放量，视为吸筹/拉升
@@ -1010,7 +1023,7 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             # --- 最终入选 ---
             # 恢复严选标准 (50分)，宁缺毋滥
             # 如果市场太差导致没有股票入选，那是市场的问题，不是策略的问题
-            if score >= 50: 
+            if score >= 40: 
                 picks.append({
                     '代码': full_code,
                     '名称': name,
@@ -1021,6 +1034,10 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
                     '标签': " ".join(tags),
                     '推荐理由': " + ".join(reasons)
                 })
+            else:
+                # 记录"虽然没被直接淘汰，但分数不够"的股票
+                if len(rejects) < 20 and score > 20:
+                     rejects.append({'名称': name, '评分': score, '原因': f"综合评分不足({score}分<40分)"})
                 
         except Exception as e:
             # 将错误也记录到落选名单，方便排查
@@ -1273,8 +1290,10 @@ elif app_mode == "智能选股扫描":
             
         # 展示落选分析 (Debug 模式)
         if rejects:
-            with st.expander("📉 落选股票分析 (为什么它们被淘汰？)", expanded=False):
-                st.write("以下展示前10只被淘汰的热门股及其主要缺陷：")
+            # 如果没有选出股票，默认展开落选分析，让用户知道原因
+            is_expanded = len(picks) == 0
+            with st.expander("📉 落选股票分析 (为什么它们被淘汰？)", expanded=is_expanded):
+                st.write("以下展示部分被淘汰的热门股及其主要缺陷（仅展示前20个）：")
                 st.table(pd.DataFrame(rejects))
                         
     st.markdown("---")
