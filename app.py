@@ -284,7 +284,8 @@ def get_sector_info(code):
             content = resp.text.split('="')[1].strip('";')
             parts = content.split('~')
             # 腾讯简版接口第 12 位是板块? 不一定，尝试用新浪网页解析
-            pass
+            # 这里如果不确定位置，就不做操作，避免解析错误
+            pass 
     except: pass
 
     # 方案4: 新浪网页爬虫 (最后的倔强)
@@ -702,30 +703,62 @@ def analyze_stock(code, name):
 
 def get_all_stocks_eastmoney():
     """
-    从东方财富获取全市场 A 股列表 (增强版：包含PE、市值、量比、60日涨幅等)
+    从东方财富获取全市场 A 股列表 (增强版：多节点轮询 + 最新Token)
     """
-    url = "http://4.push2.eastmoney.com/api/qt/clist/get"
-    params = {
-        "pn": 1,
-        "pz": 5000,
-        "po": 1,
-        "np": 1,
-        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-        "fltt": 2,
-        "invt": 2,
-        "fid": "f6", # 按成交额排序
-        "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
-        # 增加字段: f9(PE动态), f20(总市值), f23(市净率), f10(量比), f24(60日涨幅), f100(行业), f103(行业涨幅)
-        "fields": "f12,f14,f2,f3,f62,f100,f8,f9,f20,f23,f10,f24" 
-    }
+    # 备选节点，防止单点故障
+    hosts = [
+        "http://push2.eastmoney.com",
+        "http://4.push2.eastmoney.com", 
+        "http://19.push2.eastmoney.com",
+        "http://1.push2.eastmoney.com"
+    ]
+    
+    for host in hosts:
+        url = f"{host}/api/qt/clist/get"
+        params = {
+            "pn": 1,
+            "pz": 5000,
+            "po": 1,
+            "np": 1,
+            "ut": "fa5fd1943c7b386f172d6893dbfba10b", # 更新为更稳定的 Web 端 Token
+            "fltt": 2,
+            "invt": 2,
+            "wbp2u": "|0|0|0|web", # 增加防伪参数
+            "fid": "f6", # 按成交额排序
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
+            "fields": "f12,f14,f2,f3,f62,f100,f8,f9,f20,f23,f10,f24" 
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('data') and data['data'].get('diff'):
+                    return data['data']['diff']
+        except:
+            continue # 换下一个节点试
+            
+    # 如果东方财富全挂了，尝试使用 Tushare 获取列表（兜底方案）
+    # 注意：Tushare 只能获取代码，没有实时行情，所以这里只能返回一个仅包含代码和名称的基础列表
+    # 后续逻辑需要容错处理
     try:
-        resp = requests.get(url, params=params, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data['data'] and data['data']['diff']:
-                return data['data']['diff']
-    except:
-        pass
+        df = pro.stock_basic(exchange='', list_status='L', fields='symbol,name,industry')
+        if not df.empty:
+            # 转换为兼容格式
+            tushare_data = []
+            for _, row in df.iterrows():
+                tushare_data.append({
+                    'f12': row['symbol'],
+                    'f14': row['name'],
+                    'f100': row['industry'],
+                    'f2': '-', 'f3': '-', 'f20': '-', 'f10': '-', 'f8': '-', 'f9': '-' # 缺失数据标记
+                })
+            # 既然没有实时数据，就无法按成交额排序，只能随机返回一些
+            # 但后续 scan_market_for_growth 会过滤掉 '-' 的数据，所以这招其实没用
+            # 除非我们在那里加补丁。
+            # 结论：还是主要依赖东方财富，Tushare 暂不作为全市场行情的兜底，因为没行情数据没法选股。
+            pass
+    except: pass
+    
     return []
 
 def scan_market_for_growth(limit=5000, mode='aggressive'):
