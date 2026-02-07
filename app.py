@@ -793,6 +793,16 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
         st.error("无法连接行情中心，请检查网络")
         return []
     
+    # --- 预加载 Tushare 行业数据 (批量获取，极大提高效率) ---
+    ts_industry_map = {}
+    try:
+        # 获取全市场行业分类
+        df_basic = pro.stock_basic(exchange='', list_status='L', fields='symbol,industry')
+        if not df_basic.empty:
+            for _, row in df_basic.iterrows():
+                ts_industry_map[row['symbol']] = row['industry']
+    except: pass
+    
     picks = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -905,20 +915,14 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
                 except:
                     pass # K线获取失败不扣分，按基础分算
 
-            # --- 板块加成 (优先使用批量接口自带的行业信息) ---
-            sector_str = str(stock.get('f100', '未知板块'))
+            # --- 板块加成 (优先使用批量接口自带的行业信息，缺失则用Tushare补全) ---
+            sector_str = str(stock.get('f100', '-'))
             
-            # 如果是数字(有些接口返回行业ID)，尝试用备用字段或映射(这里简化处理，直接显示)
-            # 实际上 f100 返回的是行业名称，如"半导体"
+            # 如果东方财富返回的行业无效，尝试从Tushare Map中获取
+            if sector_str == '-' or sector_str == '未知板块' or sector_str == '其它':
+                sector_str = ts_industry_map.get(code, '其他行业')
             
-            # 只有当板块涨幅明显时才加分 (f103是行业涨幅，需要从批量接口获取)
-            # 修正 get_all_stocks_eastmoney 请求字段，确保包含 f100(行业名) 和 f103(行业涨幅,如果有的话)
-            # 注: 东方财富 clist 接口 f100 是行业名
-            
-            # 尝试获取行业涨幅 (f103不在默认clist里，我们需要依赖个股的强势程度来反推板块热度，或者单独获取)
-            # 为了不卡顿，这里简化：如果个股是涨停的，就认为板块也热
-            
-            if sector_str != '-' and sector_str != '其它':
+            if sector_str and sector_str != '-' and sector_str != '其他行业':
                  # 简单的板块热度判断
                  if change_pct > 5:
                      score += 10
