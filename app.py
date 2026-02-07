@@ -703,7 +703,7 @@ def analyze_stock(code, name):
 
 def get_all_stocks_eastmoney():
     """
-    从东方财富获取全市场 A 股列表 (增强版：多节点轮询 + 最新Token)
+    从东方财富获取全市场 A 股列表 (增强版：多节点轮询 + Headers伪装 + 新浪兜底)
     """
     # 备选节点，防止单点故障
     hosts = [
@@ -713,6 +713,12 @@ def get_all_stocks_eastmoney():
         "http://1.push2.eastmoney.com"
     ]
     
+    # 增加 Headers 伪装，这是云端不被拦截的关键
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "http://quote.eastmoney.com/"
+    }
+    
     for host in hosts:
         url = f"{host}/api/qt/clist/get"
         params = {
@@ -720,16 +726,16 @@ def get_all_stocks_eastmoney():
             "pz": 5000,
             "po": 1,
             "np": 1,
-            "ut": "fa5fd1943c7b386f172d6893dbfba10b", # 更新为更稳定的 Web 端 Token
+            "ut": "fa5fd1943c7b386f172d6893dbfba10b", 
             "fltt": 2,
             "invt": 2,
-            "wbp2u": "|0|0|0|web", # 增加防伪参数
+            "wbp2u": "|0|0|0|web", 
             "fid": "f6", # 按成交额排序
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
             "fields": "f12,f14,f2,f3,f62,f100,f8,f9,f20,f23,f10,f24" 
         }
         try:
-            resp = requests.get(url, params=params, timeout=3)
+            resp = requests.get(url, params=params, headers=headers, timeout=3)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get('data') and data['data'].get('diff'):
@@ -737,26 +743,45 @@ def get_all_stocks_eastmoney():
         except:
             continue # 换下一个节点试
             
-    # 如果东方财富全挂了，尝试使用 Tushare 获取列表（兜底方案）
-    # 注意：Tushare 只能获取代码，没有实时行情，所以这里只能返回一个仅包含代码和名称的基础列表
-    # 后续逻辑需要容错处理
+    # --- 终极兜底：如果东方财富全挂了，使用新浪财经列表接口 ---
+    # 新浪接口：http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData
     try:
-        df = pro.stock_basic(exchange='', list_status='L', fields='symbol,name,industry')
-        if not df.empty:
-            # 转换为兼容格式
-            tushare_data = []
-            for _, row in df.iterrows():
-                tushare_data.append({
-                    'f12': row['symbol'],
-                    'f14': row['name'],
-                    'f100': row['industry'],
-                    'f2': '-', 'f3': '-', 'f20': '-', 'f10': '-', 'f8': '-', 'f9': '-' # 缺失数据标记
-                })
-            # 既然没有实时数据，就无法按成交额排序，只能随机返回一些
-            # 但后续 scan_market_for_growth 会过滤掉 '-' 的数据，所以这招其实没用
-            # 除非我们在那里加补丁。
-            # 结论：还是主要依赖东方财富，Tushare 暂不作为全市场行情的兜底，因为没行情数据没法选股。
-            pass
+        url = "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
+        params = {
+            "page": 1,
+            "num": 2000, # 新浪一次取2000个够用了，再多容易超时
+            "sort": "amount", # 按成交额排序
+            "asc": 0,
+            "node": "hs_a",
+            "symbol": "",
+            "_s_r_a": "page"
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            # 映射新浪字段到东方财富字段 (f格式)
+            sina_stocks = []
+            for item in data:
+                # 东方财富字段: f12(代码), f14(名称), f2(现价), f3(涨跌幅), f62(主力净流-新浪没这个), f100(行业), f8(换手), f9(PE), f20(市值), f10(量比)
+                # 新浪字段: symbol, name, trade, changepercent, turnoverratio, per, mktcap, volume, amount
+                
+                # 行业获取比较麻烦，新浪列表里没有，暂时置空
+                
+                stock = {
+                    'f12': item['code'],
+                    'f14': item['name'],
+                    'f2': item['trade'],
+                    'f3': item['changepercent'],
+                    'f62': '-', # 主力净流
+                    'f100': '-', # 行业
+                    'f8': item['turnoverratio'],
+                    'f9': item['per'],
+                    'f20': float(item['mktcap']) * 10000 if item['mktcap'] else 0, # 新浪单位是万
+                    'f10': '-', # 量比
+                    'f24': '-' # 60日涨幅
+                }
+                sina_stocks.append(stock)
+            return sina_stocks
     except: pass
     
     return []
