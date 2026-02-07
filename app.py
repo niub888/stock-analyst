@@ -1155,6 +1155,14 @@ for idx, row in pf.iterrows():
 st.sidebar.markdown("---")
 # 推送配置
 push_token = st.sidebar.text_input("PushPlus Token (微信推送)", value="d506d2e47d27443bba16a213720dbe4a", type="password")
+
+if st.sidebar.button("📨 测试推送功能"):
+    if push_token:
+        send_pushplus(push_token, "AI分析师测试", "恭喜！您的微信推送功能配置成功。")
+        st.toast("测试消息已发送，请检查微信", icon="✅")
+    else:
+        st.sidebar.error("请先输入 Token")
+
 if st.sidebar.button("启动实时监控 (循环)"):
     st.toast("开始监控... 请勿关闭页面")
     ph = st.empty()
@@ -1195,11 +1203,15 @@ if app_mode == "个股详细分析":
                 st.session_state['selected_stock'] = normalize_code(new_search)
                 st.rerun()
 
-    if st.button("开始深度分析") or st.session_state.get('auto_run'):
+    if st.button("开始深度分析", type="primary") or st.session_state.get('auto_run'):
         st.session_state['auto_run'] = False # 重置
+        st.toast("正在启动 AI 深度分析，请稍候...", icon="🤖")
         
-        with st.spinner("AI 正在分析大数据..."):
-            rt = get_realtime_data(target_code)
+        # 强制刷新 UI，避免移动端无响应
+        placeholder = st.empty()
+        with placeholder.container():
+            with st.spinner("AI 正在分析大数据..."):
+                rt = get_realtime_data(target_code)
             if rt:
                 # 头部指标
                 c1, c2, c3, c4 = st.columns(4)
