@@ -777,14 +777,12 @@ def get_all_stocks_eastmoney():
     return []
 
 def scan_market_for_growth(limit=5000, mode='aggressive'):
-    # 1. 获取全市场增强数据
-    all_stocks = get_all_stocks_eastmoney()
-    if not all_stocks:
-        st.error("无法连接行情中心，请检查网络")
-        return [], []
-    
-    # --- 预加载 Tushare 行业数据 (批量获取，极大提高效率) ---
+    # 初始化变量，防止 NameError
+    picks = []
+    rejects = []
     ts_industry_map = {}
+    
+    # --- 预加载 Tushare 行业数据 (提前到最前，确保变量存在) ---
     try:
         # 获取全市场行业分类
         df_basic = pro.stock_basic(exchange='', list_status='L', fields='symbol,industry')
@@ -793,6 +791,12 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
                 # 兼容 symbol 格式 (东财是 600519, Tushare 是 600519.SH)
                 ts_industry_map[row['symbol'].split('.')[0]] = row['industry']
     except: pass
+
+    # 1. 获取全市场增强数据
+    all_stocks = get_all_stocks_eastmoney()
+    if not all_stocks:
+        st.error("无法连接行情中心，请检查网络")
+        return [], []
     
     # 获取大盘指数涨跌幅 (用于相对强度 Alpha 计算)
     index_change = 0.0
@@ -806,9 +810,8 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
                 index_change = (price_curr - prev_close) / prev_close * 100
     except: pass
     
-    picks = []
-    # 增加落选记录，用于Debug和展示
-    rejects = [] 
+    # picks = [] (已在开头初始化)
+    # rejects = [] (已在开头初始化)
     
     progress_bar = st.progress(0)
     status_text = st.empty()
