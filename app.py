@@ -783,6 +783,17 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
         st.error("无法连接行情中心，请检查网络")
         return [], []
     
+    # --- 预加载 Tushare 行业数据 (批量获取，极大提高效率) ---
+    ts_industry_map = {}
+    try:
+        # 获取全市场行业分类
+        df_basic = pro.stock_basic(exchange='', list_status='L', fields='symbol,industry')
+        if not df_basic.empty:
+            for _, row in df_basic.iterrows():
+                # 兼容 symbol 格式 (东财是 600519, Tushare 是 600519.SH)
+                ts_industry_map[row['symbol'].split('.')[0]] = row['industry']
+    except: pass
+    
     # 获取大盘指数涨跌幅 (用于相对强度 Alpha 计算)
     index_change = 0.0
     try:
