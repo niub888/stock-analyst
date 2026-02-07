@@ -793,14 +793,16 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
         st.error("无法连接行情中心，请检查网络")
         return []
     
-    # --- 预加载 Tushare 行业数据 (批量获取，极大提高效率) ---
-    ts_industry_map = {}
+    # 获取大盘指数涨跌幅 (用于相对强度 Alpha 计算)
+    index_change = 0.0
     try:
-        # 获取全市场行业分类
-        df_basic = pro.stock_basic(exchange='', list_status='L', fields='symbol,industry')
-        if not df_basic.empty:
-            for _, row in df_basic.iterrows():
-                ts_industry_map[row['symbol']] = row['industry']
+        # 获取上证指数 (000001)
+        sh_index = get_realtime_data('sh000001')
+        if sh_index:
+            price_curr = sh_index['price']
+            prev_close = sh_index['prev_close']
+            if prev_close > 0:
+                index_change = (price_curr - prev_close) / prev_close * 100
     except: pass
     
     picks = []
@@ -809,6 +811,9 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
     
     # 2. 筛选逻辑
     total_scan = min(len(all_stocks), limit)
+    
+    # 预计算：为了板块效应，我们可以先统计一下当前扫描范围内的热门板块
+    # 但由于是流式处理，只能近似
     
     for i, stock in enumerate(all_stocks[:total_scan]):
         if i % 50 == 0: 
@@ -823,8 +828,9 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             code = stock['f12']
             pe = stock['f9']
             market_cap = stock['f20']
-            vol_ratio = stock['f10'] # 量比
+            vol_ratio = stock['f10'] # 量比 (RVOL)
             turnover = stock['f8'] # 换手率
+            sector_raw = str(stock.get('f100', '-'))
             
             # 数据清洗
             if price == '-' or change_pct == '-' or market_cap == '-': continue
@@ -839,105 +845,129 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             # 补全代码
             full_code = f"sh{code}" if code.startswith('6') else f"sz{code}"
             
-            # --- 基础门槛 (放宽) ---
-            # 1. 排除极小盘和ST (ST股名字通常带ST)
+            # --- 基础门槛 ---
             if 'ST' in name or '退' in name: continue
             if market_cap < 2000000000: continue # 市值至少20亿
             
-            # --- AI 动态评分系统 (Score) ---
+            # --- AI 四维评分系统 (4D Alpha Strategy) ---
             score = 0
             reasons = []
             tags = []
             
-            # 1. 资金面打分 (权重 40%)
-            if vol_ratio > 1.5: 
-                score += 15
-                tags.append("放量")
-            if vol_ratio > 3.0: 
-                score += 10 # 爆量额外加分
-                
-            if turnover > 3: 
-                score += 10
-                tags.append("活跃")
-            if turnover > 10: 
-                score += 5 # 高换手额外加分
-                
-            # 2. 技术面打分 (权重 40%)
-            # 激进模式：喜欢涨势好的
-            if mode == 'aggressive':
-                if 2 <= change_pct <= 9: 
-                    score += 20
-                    reasons.append("主升浪启动区间(2-9%)")
-                elif change_pct > 9:
-                    score += 10 # 涨停板虽然好，但不好买，分给低点
-            # 稳健模式：喜欢跌不动的
-            else:
-                if -5 <= change_pct <= 1:
-                    score += 20
-                    reasons.append("低位抗跌/微涨")
+            # 维度一：资金面 (Money Flow) - 30分
+            # 核心逻辑：量在价先
+            money_score = 0
             
-            # 3. 基本面打分 (权重 20%)
-            if pe > 0 and pe < 60: 
-                score += 10
-                reasons.append("估值合理")
-            elif pe > 0:
-                score += 5
+            # 1. 异常放量 (RVOL > 1.5)
+            if vol_ratio > 1.5: 
+                money_score += 15
+                tags.append("放量")
+                reasons.append(f"量比 {vol_ratio:.1f} > 1.5，大资金进场")
+            
+            # 2. 主力净流入 (量价配合)
+            # 股价上涨且放量，视为吸筹/拉升
+            if change_pct > 0 and vol_ratio > 1.2:
+                money_score += 15
+            # 筹码锁定：缩量上涨 (说明抛压小)
+            elif change_pct > 1 and vol_ratio < 0.8:
+                money_score += 10
+                reasons.append("缩量上涨，筹码锁定")
                 
-            # --- 进阶技术确认 (K线形态) ---
-            # 只有当基础分及格时(例如>30分)，才去请求K线，节省资源
-            if score > 30:
+            score += money_score
+            
+            # 维度二：相对强度 (Relative Strength / Alpha) - 30分
+            # 核心逻辑：强者恒强
+            alpha_score = 0
+            alpha = change_pct - index_change
+            
+            # 1. 跑赢大盘
+            if alpha > 0:
+                alpha_score += 15
+                reasons.append(f"跑赢大盘 {alpha:.2f}%")
+            
+            # 2. 抗跌测试 (Resilience)
+            if index_change < -0.5 and change_pct > -0.1:
+                alpha_score += 15
+                tags.append("逆势抗跌")
+                reasons.append("大盘大跌它坚挺")
+            elif change_pct > 3: # 绝对强势
+                alpha_score += 10
+                
+            score += min(alpha_score, 30)
+            
+            # 维度三：技术形态 (Market Structure) - 20分
+            # 核心逻辑：阻力最小路径
+            tech_score = 0
+            
+            # 初步筛选：只有分数较高时才请求K线，避免请求过多
+            if score > 20:
                 try:
-                    df_k = get_kline_data(full_code, scale=240, datalen=30)
+                    # 获取K线数据 (60日)
+                    df_k = get_kline_data(full_code, scale=240, datalen=60)
                     if not df_k.empty and len(df_k) > 20:
                         close = df_k['Close'].iloc[-1]
                         ma5 = df_k['Close'].rolling(5).mean().iloc[-1]
                         ma10 = df_k['Close'].rolling(10).mean().iloc[-1]
                         ma20 = df_k['Close'].rolling(20).mean().iloc[-1]
-                        ma30 = df_k['Close'].rolling(30).mean().iloc[-1]
+                        ma60 = df_k['Close'].rolling(60).mean().iloc[-1]
                         
-                        # 策略 A: 均线多头 (最强趋势)
-                        if ma5 > ma10 > ma20:
-                            score += 30
+                        # 1. 均线多头排列
+                        if ma5 > ma10 > ma20 > ma60:
+                            tech_score += 20
                             tags.append("多头排列")
-                            reasons.append("均线完美发散，趋势极强")
+                            reasons.append("均线完美发散，上方无阻力")
+                        elif ma5 > ma10 > ma20:
+                            tech_score += 10
+                        
+                        # 2. 突破箱体 (Box Breakout)
+                        # 检查过去20天最高价
+                        high_20 = df_k['High'].iloc[-20:-1].max()
+                        if close > high_20:
+                            tech_score += 10
+                            tags.append("突破新高")
+                            reasons.append("有效突破20日箱体")
                             
-                        # 策略 B: 回踩生命线 (最佳买点)
-                        elif close > ma20 and abs(close - ma20)/ma20 < 0.02:
-                            score += 25
-                            tags.append("回踩支撑")
-                            reasons.append("回踩20日线企稳，黄金买点")
-                            
-                        # 策略 C: 底部突破 (低位首板)
-                        elif close > ma30 and df_k['Close'].iloc[-5] < ma30:
-                            score += 20
-                            tags.append("底部突破")
-                            reasons.append("刚刚站上30日线，脱离底部")
-                except:
-                    pass # K线获取失败不扣分，按基础分算
-
-            # --- 板块加成 (优先使用批量接口自带的行业信息，缺失则用Tushare补全) ---
-            sector_str = str(stock.get('f100', '-'))
+                        # 3. 波动率收缩 (VCP)
+                        # 近期波动小，今日放量
+                        if vol_ratio > 1.5 and abs(change_pct) < 2 and tech_score < 20:
+                             tags.append("VCP蓄势")
+                             tech_score += 5
+                except: pass
             
-            # 如果东方财富返回的行业无效，尝试从Tushare Map中获取
-            if sector_str == '-' or sector_str == '未知板块' or sector_str == '其它':
-                sector_str = ts_industry_map.get(code, '其他行业')
+            score += min(tech_score, 20)
             
-            if sector_str and sector_str != '-' and sector_str != '其他行业':
-                 # 简单的板块热度判断
-                 if change_pct > 5:
-                     score += 10
-                     tags.append("板块领涨")
-                     reasons.append(f"所属【{sector_str}】板块表现活跃")
+            # 维度四：板块/事件驱动 (Catalyst) - 20分
+            # 核心逻辑：板块共振
+            catalyst_score = 0
+            
+            # 修复板块名称：如果 f100 无效，尝试用 get_sector_info 获取准确的
+            # 但为了速度，我们只对高分股做这个操作
+            real_sector = sector_raw
+            if score >= 50 and (real_sector == '-' or real_sector == '其它' or real_sector == '未知板块'):
+                # 针对高潜股，调用精准接口查板块
+                sec_info = get_sector_info(full_code)
+                if sec_info:
+                    real_sector = sec_info['sector_name']
+            
+            if real_sector and real_sector != '-' and real_sector != '其它':
+                # 如果个股大涨，通常意味着板块也不错 (简化判定)
+                if change_pct > 5:
+                    catalyst_score += 20
+                    tags.append("板块领涨")
+                    reasons.append(f"所属【{real_sector}】板块活跃")
+                elif change_pct > 2:
+                    catalyst_score += 10
             else:
-                 sector_str = "其他行业"
+                real_sector = "其他行业"
+                
+            score += catalyst_score
             
-            # --- 最终入选门槛 ---
-            # 只要分数超过 50 分就能入选，不再一票否决
-            if score >= 50:
+            # --- 最终入选 ---
+            if score >= 60: # 提高门槛，只选精品
                 picks.append({
                     '代码': full_code,
                     '名称': name,
-                    '板块': sector_str,
+                    '板块': real_sector,
                     '现价': price,
                     '涨跌幅': f"{change_pct:.2f}%",
                     'AI评分': score,
@@ -951,14 +981,13 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
     progress_bar.empty()
     status_text.empty()
     
-    # 按分数从高到低排序，只取前N名
+    # 按分数排序
     picks.sort(key=lambda x: x['AI评分'], reverse=True)
     
-    # 自动保存历史记录
     if picks:
         save_history(picks)
         
-    return picks[:50] # 只展示精选的前50个，宁缺毋滥
+    return picks[:50]
 
 def send_pushplus(token, title, content):
     url = 'http://www.pushplus.plus/send'
