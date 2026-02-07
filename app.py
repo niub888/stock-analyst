@@ -1191,17 +1191,26 @@ if app_mode == "个股详细分析":
     with col1:
         st.text_input("当前分析", target_code, disabled=True)
     with col2:
-        new_search = st.text_input("搜索其他股票", placeholder="输入代码或名称回车")
-        if new_search:
-            # 简单搜索逻辑
-            if re.search(r'[\u4e00-\u9fa5]', new_search):
-                c, n = search_stock_code(new_search)
-                if c: 
-                    st.session_state['selected_stock'] = c
-                    st.rerun()
-            else:
-                st.session_state['selected_stock'] = normalize_code(new_search)
-                st.rerun()
+        # 使用回调函数处理搜索，确保输入后自动触发分析，并清空输入框防止死循环
+        def on_search_submit():
+            search_val = st.session_state.search_input
+            if search_val:
+                # 尝试搜索
+                found_code = None
+                if re.search(r'[\u4e00-\u9fa5]', search_val):
+                    c, n = search_stock_code(search_val)
+                    if c: found_code = c
+                else:
+                    found_code = normalize_code(search_val)
+                
+                if found_code:
+                    st.session_state['selected_stock'] = found_code
+                    st.session_state['auto_run'] = True # 关键：自动开启分析模式
+                    st.session_state.search_input = "" # 清空输入框
+                else:
+                    st.toast(f"未找到股票: {search_val}", icon="⚠️")
+
+        st.text_input("搜索其他股票", placeholder="输入代码/名称，回车自动分析", key="search_input", on_change=on_search_submit)
 
     if st.button("开始深度分析", type="primary") or st.session_state.get('auto_run'):
         st.session_state['auto_run'] = False # 重置
