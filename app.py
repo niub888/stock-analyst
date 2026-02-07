@@ -7,6 +7,10 @@ from datetime import datetime
 import time
 import re
 import os
+import sys
+
+# 增加启动日志，方便在 Streamlit Cloud 后台排查
+print(f"DEBUG: App is starting... Python version: {sys.version}")
 
 # --- 0. 页面配置 ---
 st.set_page_config(
