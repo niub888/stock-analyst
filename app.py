@@ -259,17 +259,18 @@ def calculate_kdj(df, n=9, m1=3, m2=3):
 
 def get_sector_info(code):
     """
-    获取个股所属板块及板块涨跌幅 (使用东方财富接口)
+    获取个股所属板块及板块涨跌幅 (增强版)
     """
-    # 东方财富需要secid，简单映射：sh->1, sz->0
     clean_code = code.replace('sh', '').replace('sz', '')
     market_id = '1' if code.startswith('sh') else '0'
     secid = f"{market_id}.{clean_code}"
     
+    # 尝试多个接口
     url = f"http://push2.eastmoney.com/api/qt/stock/get"
     params = {
         "secid": secid,
         "fields": "f100,f102,f103", # f100行业, f102行业代码, f103行业涨幅
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
         "invt": 2,
         "fltt": 2
     }
@@ -288,9 +289,100 @@ def get_sector_info(code):
 
 def analyze_stock(code, name):
     df = get_kline_data(code)
-    if df.empty:
+    if df.empty or len(df) < 20:
         return None
     
+    # --- 1. 盘面事实 (The Fact) ---
+    last_row = df.iloc[-1]
+    prev_row = df.iloc[-2]
+    ma5 = df['Close'].rolling(5).mean().iloc[-1]
+    ma10 = df['Close'].rolling(10).mean().iloc[-1]
+    ma20 = df['Close'].rolling(20).mean().iloc[-1]
+    ma60 = df['Close'].rolling(60).mean().iloc[-1]
+    
+    current_price = last_row['Close']
+    volume_ratio = last_row['Volume'] / df['Volume'].mean()
+    
+    # 资金流向 (实时数据)
+    rt = get_realtime_data(code)
+    capital_flow_msg = "资金流向数据获取中..."
+    if rt:
+        # 这里只是模拟，实际资金流向需要额外接口，或者通过成交量和内外盘估算
+        # 为了严谨，我们使用成交量状态代替
+        if volume_ratio > 1.5:
+            capital_flow_msg = f"今日放量 {volume_ratio:.1f} 倍，资金活跃度高。"
+        elif volume_ratio < 0.6:
+            capital_flow_msg = f"今日缩量，资金观望情绪浓厚。"
+        else:
+            capital_flow_msg = "成交量温和，资金进出平衡。"
+
+    fact_section = f"""
+    - **当前价格**: {current_price:.2f}
+    - **均线位置**: 位于5日线{'上方' if current_price > ma5 else '下方'}，20日线{'上方' if current_price > ma20 else '下方'}。
+    - **成交量**: {capital_flow_msg}
+    """
+
+    # --- 2. 趋势定性 (Trend Identification) ---
+    trend_status = "震荡"
+    if ma5 > ma10 > ma20:
+        trend_status = "多头 (上升趋势)"
+        phase = "拉升期"
+    elif ma5 < ma10 < ma20:
+        trend_status = "空头 (下降趋势)"
+        phase = "阴跌/出货期"
+    else:
+        trend_status = "震荡整理"
+        phase = "吸筹/洗盘期"
+        
+    trend_section = f"""
+    - **当前阶段**: {phase}
+    - **核心判断**: 目前处于 **{trend_status}** 阶段。
+    """
+
+    # --- 3. 关键点位 (Key Levels) ---
+    # 压力位：前高 或 整数关口
+    high_60 = df['High'].tail(60).max()
+    resistance = high_60 if current_price < high_60 else current_price * 1.1
+    # 支撑位：20日线 或 前低
+    low_60 = df['Low'].tail(60).min()
+    support = ma20 if current_price > ma20 else low_60
+    
+    level_section = f"""
+    - **压力位 (Resistance)**: {resistance:.2f} (前高/整数关口)
+    - **支撑位 (Support)**: {support:.2f} (20日线/前低)
+    """
+
+    # --- 4. 逻辑验证 (Logic Check) ---
+    # 盈亏比计算
+    upside = resistance - current_price
+    downside = current_price - support
+    rr_ratio = upside / downside if downside > 0 else 0
+    
+    logic_section = f"""
+    - **盈亏比**: 约 {rr_ratio:.1f}:1 ({'满足' if rr_ratio > 2 else '不满足'} 1:2 优选标准)
+    - **市场主线**: 需结合下方板块分析确认。
+    """
+
+    # --- 5. 最终指令 (Final Verdict) ---
+    verdict = "观望"
+    if trend_status.startswith("多头") and volume_ratio > 1:
+        verdict = "强烈买入" if rr_ratio > 2 else "逢低吸纳"
+    elif trend_status.startswith("空头"):
+        verdict = "清仓止损" if current_price < support else "减仓"
+    
+    stop_loss = support * 0.97 # 止损位设在支撑位下方3%
+    
+    verdict_section = f"""
+    - **结论**: **{verdict}**
+    - **止损位**: {stop_loss:.2f} (跌破严格执行)
+    - **撤退逻辑**: 若有效跌破 {support:.2f}，说明趋势破坏，必须离场。
+    """
+    
+    scenario_section = f"""
+    - **😊 乐观剧本**: 放量突破 {resistance:.2f}，开启新一轮上涨空间，目标看至 {resistance * 1.1:.2f}。
+    - **😭 悲观剧本**: 缩量阴跌回测 {support:.2f}，若失守将考验 {low_60:.2f} 支撑。
+    """
+
     # 获取板块信息
     sector_info = get_sector_info(code)
     sector_text = "未知板块"
@@ -302,68 +394,48 @@ def analyze_stock(code, name):
     
     df = calculate_macd(df)
     df = calculate_kdj(df)
-    
-    last_row = df.iloc[-1]
-    prev_row = df.iloc[-2]
-    
-    # 基础指标
-    trend = "震荡"
-    if last_row['DIF'] > last_row['DEA'] and last_row['DIF'] > 0:
-        trend = "强势上涨"
-    elif last_row['DIF'] < last_row['DEA'] and last_row['DIF'] < 0:
-        trend = "弱势下跌"
-        
-    # 资金/形态判断
-    main_force = "资金观望"
-    if last_row['Volume'] > df['Volume'].mean() * 1.5 and last_row['Close'] > last_row['Open']:
-        main_force = "主力抢筹"
-    elif last_row['Volume'] > df['Volume'].mean() * 1.5 and last_row['Close'] < last_row['Open']:
-        main_force = "主力出货"
-        
-    # 信号
-    signal = "持有"
-    if last_row['K'] < 20 and last_row['K'] > prev_row['K']:
-        signal = "超卖反弹 (买入)"
-    elif last_row['K'] > 80 and last_row['K'] < prev_row['K']:
-        signal = "超买回调 (卖出)"
-        
-    # AI 研报文案
-    kline_pattern = f"当前收盘价 {last_row['Close']:.2f}。MACD指标显示{'金叉' if last_row['DIF']>last_row['DEA'] else '死叉'}状态。KDJ J值为 {last_row['J']:.2f}。"
-    fund_flow = f"今日成交量为 {last_row['Volume']/10000:.0f}万手，{'放量' if last_row['Volume'] > df['Volume'].mean() else '缩量'}运行。{main_force}迹象明显。"
-    
-    tomorrow_trend = "看涨" if trend == "强势上涨" or signal == "超卖反弹 (买入)" else "看跌"
-    if trend == "震荡": tomorrow_trend = "震荡"
-    
-    prob = 60
-    if trend == "强势上涨": prob += 20
-    if main_force == "主力抢筹": prob += 10
-    if signal == "超卖反弹 (买入)": prob += 10
-    tomorrow_prob = f"上涨概率 {min(prob, 95)}%" if tomorrow_trend != "看跌" else f"下跌概率 {min(prob, 95)}%"
 
     # 新闻分析
     news_list = get_specific_stock_news(code, name)
     news_summary, news_sentiment = analyze_news_sentiment(news_list)
     
-    news_analysis = f"{news_summary}\n\n**板块分析**: {sector_text}\n\n**AI 综合推演**: 结合技术面{trend}趋势与{main_force}信号，"
-    if news_sentiment == "偏利好":
-        news_analysis += "消息面利好共振，建议积极关注。"
-    elif news_sentiment == "偏利空":
-        news_analysis += "消息面存在利空扰动，建议谨慎规避。"
-    else:
-        news_analysis += "消息面平稳，以技术面操作为主。"
+    # 组装最终报告
+    final_report = f"""
+### 1. 盘面事实 (The Fact)
+{fact_section}
+
+### 2. 趋势定性 (Trend Identification)
+{trend_section}
+
+### 3. 关键点位 (Key Levels)
+{level_section}
+
+### 4. 逻辑验证 (Logic Check)
+{logic_section}
+
+### 5. 最终指令 (Final Verdict)
+{verdict_section}
+{scenario_section}
+
+---
+**板块分析**: {sector_text}
+
+**资讯解读**: 
+{news_summary}
+"""
 
     return {
-        'trend': trend,
+        'trend': trend_status,
         'main_force': main_force,
         'signal': signal,
         'kline_pattern': kline_pattern,
         'fund_flow': fund_flow,
         'tomorrow_trend': tomorrow_trend,
         'tomorrow_prob': tomorrow_prob,
-        'news_analysis': news_analysis,
+        'news_analysis': final_report, # 使用新报告覆盖旧字段
         'news_list': news_list,
-        'advice': f"当前处于{trend}阶段，建议{signal}。",
-        'prediction': f"预计明日{tomorrow_trend}，支撑位 {df['Low'].min():.2f}，压力位 {df['High'].max():.2f}。",
+        'advice': verdict,
+        'prediction': f"预计明日{tomorrow_trend}，支撑位 {support:.2f}，压力位 {resistance:.2f}。",
         'df': df
     }
 
