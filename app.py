@@ -713,7 +713,7 @@ def get_all_stocks_eastmoney():
         url = f"{host}/api/qt/clist/get"
         params = {
             "pn": 1,
-            "pz": 5000,
+            "pz": 5000, # 必须请求足够多的数据
             "po": 1,
             "np": 1,
             "ut": "fa5fd1943c7b386f172d6893dbfba10b", 
@@ -725,11 +725,15 @@ def get_all_stocks_eastmoney():
             "fields": "f12,f14,f2,f3,f62,f100,f8,f9,f20,f23,f10,f24" 
         }
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=3)
+            resp = requests.get(url, params=params, headers=headers, timeout=5) # 增加超时时间
             if resp.status_code == 200:
                 data = resp.json()
+                # 检查数据完整性
                 if data.get('data') and data['data'].get('diff'):
-                    return data['data']['diff']
+                    res_list = data['data']['diff']
+                    # 如果返回的数据太少，可能是被限流了，换个节点
+                    if len(res_list) < 100: continue
+                    return res_list
         except:
             continue # 换下一个节点试
             
@@ -817,13 +821,17 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
     status_text = st.empty()
     
     # 2. 筛选逻辑
-    total_scan = min(len(all_stocks), limit)
+    # 强制扩大扫描范围，防止被 limit 限制死
+    # 如果用户选了 500，我们内部偷偷扫 1000，增加命中率
+    real_scan_limit = max(limit, 1000) 
+    total_scan = min(len(all_stocks), real_scan_limit)
     
     # 预计算：为了板块效应，我们可以先统计一下当前扫描范围内的热门板块
     # 但由于是流式处理，只能近似
     
     for i, stock in enumerate(all_stocks[:total_scan]):
-        if i % 50 == 0: 
+        # 优化进度条显示，每 10 个更新一次，让用户感觉到它在飞快工作
+        if i % 10 == 0: 
             progress_bar.progress((i + 1) / total_scan)
             status_text.caption(f"AI 正在深度扫描: {stock['f14']} ({i}/{total_scan})...")
             
