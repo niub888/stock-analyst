@@ -796,6 +796,9 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
     except: pass
     
     picks = []
+    # 增加落选记录，用于Debug和展示
+    rejects = [] 
+    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
