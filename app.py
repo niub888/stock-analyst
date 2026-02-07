@@ -965,7 +965,9 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             score += catalyst_score
             
             # --- 最终入选 ---
-            if score >= 50: # 降低门槛至 50，确保有结果
+            # 恢复严选标准 (50分)，宁缺毋滥
+            # 如果市场太差导致没有股票入选，那是市场的问题，不是策略的问题
+            if score >= 50: 
                 picks.append({
                     '代码': full_code,
                     '名称': name,
@@ -1186,10 +1188,10 @@ elif app_mode == "智能选股扫描":
         # 兼容 spinner
         try:
             with st.spinner(f'AI 正在全速扫描 {scan_limit} 只股票 ({mode_key}模式)...'):
-                picks = scan_market_for_growth(scan_limit, mode_key)
+                picks, rejects = scan_market_for_growth(scan_limit, mode_key)
         except:
             st.info(f"AI 正在全速扫描 {scan_limit} 只股票...")
-            picks = scan_market_for_growth(scan_limit, mode_key)
+            picks, rejects = scan_market_for_growth(scan_limit, mode_key)
             
         if picks:
             st.success(f"扫描完成！共发现 {len(picks)} 只优质股 (按AI综合评分排序)：")
@@ -1217,7 +1219,13 @@ elif app_mode == "智能选股扫描":
                         st.toast(f"已加入 {p['名称']}")
                         st.rerun()
         else:
-            st.warning("暂无符合条件的股票")
+            st.warning("暂无符合条件的股票（市场极度低迷或策略过严）")
+            
+        # 展示落选分析 (Debug 模式)
+        if rejects:
+            with st.expander("📉 落选股票分析 (为什么它们被淘汰？)", expanded=False):
+                st.write("以下展示前10只被淘汰的热门股及其主要缺陷：")
+                st.table(pd.DataFrame(rejects))
                         
     st.markdown("---")
     st.subheader("📜 历史选股复盘 (验证AI胜率)")
