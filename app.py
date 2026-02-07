@@ -991,7 +991,7 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
     if picks:
         save_history(picks)
         
-    return picks[:50]
+    return picks[:50], rejects # 返回落选名单
 
 def send_pushplus(token, title, content):
     url = 'http://www.pushplus.plus/send'
