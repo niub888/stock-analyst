@@ -839,8 +839,17 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             full_code = f"sh{code}" if code.startswith('6') else f"sz{code}"
             
             # --- 基础门槛 ---
-            if 'ST' in name or '退' in name: continue
-            if market_cap < 2000000000: continue # 市值至少20亿
+            if 'ST' in name or '退' in name: 
+                # 记录 ST 落选
+                if len(rejects) < 5:
+                     rejects.append({'名称': name, '评分': 0, '原因': 'ST/退市股排除'})
+                continue
+                
+            if market_cap < 2000000000: 
+                # 记录小盘落选
+                if len(rejects) < 5:
+                     rejects.append({'名称': name, '评分': 0, '原因': '市值<20亿排除'})
+                continue # 市值至少20亿
             
             # --- AI 四维评分系统 (4D Alpha Strategy) ---
             score = 0
@@ -983,6 +992,13 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
                 })
                 
         except Exception as e:
+            # 将错误也记录到落选名单，方便排查
+            if len(rejects) < 10:
+                rejects.append({
+                    '名称': name if 'name' in locals() else '未知',
+                    '评分': 0,
+                    '原因': f"数据处理异常: {str(e)}"
+                })
             continue
             
     progress_bar.empty()
