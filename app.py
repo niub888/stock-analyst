@@ -874,11 +874,15 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             # 核心逻辑：量在价先
             money_score = 0
             
-            # 1. 异常放量 (RVOL > 1.5)
-            if vol_ratio > 1.5: 
+            # 1. 基础量能 (RVOL > 1.0)
+            # 只要不缩量就行，放宽标准
+            if vol_ratio > 1.0: 
                 money_score += 15
-                tags.append("放量")
-                reasons.append(f"量比 {vol_ratio:.1f} > 1.5，大资金进场")
+                tags.append("温和放量")
+                reasons.append(f"量比 {vol_ratio:.1f} > 1.0")
+            else:
+                if len(rejects) < 10:
+                    rejects.append({'名称': name, '评分': score, '原因': f"量能不足(量比{vol_ratio:.1f}<1.0)"})
             
             # 2. 主力净流入 (量价配合)
             # 股价上涨且放量，视为吸筹/拉升
@@ -900,6 +904,9 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
             if alpha > 0:
                 alpha_score += 15
                 reasons.append(f"跑赢大盘 {alpha:.2f}%")
+            else:
+                if len(rejects) < 10:
+                    rejects.append({'名称': name, '评分': score, '原因': f"跑输大盘(Alpha {alpha:.2f}%)"})
             
             # 2. 抗跌测试 (Resilience)
             if index_change < -0.5 and change_pct > -0.1:
@@ -935,13 +942,15 @@ def scan_market_for_growth(limit=5000, mode='aggressive'):
                         elif ma5 > ma10 > ma20:
                             tech_score += 10
                         
-                        # 2. 突破箱体 (Box Breakout)
-                        # 检查过去20天最高价
-                        high_20 = df_k['High'].iloc[-20:-1].max()
-                        if close > high_20:
+                        # 2. 站上生命线 (Stand on MA20)
+                        # 只要站稳20日线，就是好股，不一定要突破箱体
+                        if close > ma20:
                             tech_score += 10
-                            tags.append("突破新高")
-                            reasons.append("有效突破20日箱体")
+                            tags.append("站上20日线")
+                            reasons.append("股价位于生命线上方，趋势向好")
+                        else:
+                            if len(rejects) < 10:
+                                rejects.append({'名称': name, '评分': score, '原因': f"跌破20日线({close:.2f}<{ma20:.2f})"})
                             
                         # 3. 波动率收缩 (VCP)
                         # 近期波动小，今日放量
